@@ -124,7 +124,7 @@ ZIG_BUILD_COMMAND=(
     -Demit-macos-app=false
     -Demit-docs=false
     -Dsentry=false
-    -Dcustom-shaders=false
+    -Dcustom-shaders=true
     -Dinspector=false
     -Dtarget="$ZIG_TARGET"
 )
