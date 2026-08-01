@@ -36,17 +36,17 @@ private enum TerminalCallbacks {
         let bridge = Unmanaged<TerminalCallbackBridge>
             .fromOpaque(bridgePtr)
             .takeUnretainedValue()
+        // Ghostty reads this return value to decide whether to run its own
+        // fallback for the action (e.g. open_url spawns the system opener).
+        // That answer only exists when the bridge runs inline on the main
+        // thread; off-thread the action is delivered asynchronously and
+        // reported unhandled.
         guard Thread.isMainThread else {
             terminalRunOnMain { bridge.handleAction(action) }
             return false
         }
         return MainActor.assumeIsolated {
             bridge.handleAction(action)
-            // Core spawns /usr/bin/open for an open_url reported unhandled,
-            // so a host delegate that took the URL is reported as handling
-            // it. Both open_url emitters run on the main thread.
-            return action.tag == GHOSTTY_ACTION_OPEN_URL
-                && bridge.delegate is any TerminalSurfaceOpenURLDelegate
         }
     }
 
