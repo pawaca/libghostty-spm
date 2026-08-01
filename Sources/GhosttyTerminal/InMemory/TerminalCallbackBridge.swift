@@ -25,7 +25,12 @@ final class TerminalCallbackBridge {
         self.delegate = delegate
     }
 
-    func handleAction(_ action: ghostty_action_s) {
+    /// Returns whether the app handled the action. Ghostty runs its own
+    /// fallback for some unhandled actions (e.g. `open_url` spawns the
+    /// system opener), so a `true` here is how the app suppresses those.
+    /// Actions with no app-side answer report `false`, same as before.
+    @discardableResult
+    func handleAction(_ action: ghostty_action_s) -> Bool {
         switch action.tag {
         case GHOSTTY_ACTION_SET_TITLE:
             if let cStr = action.action.set_title.title {
@@ -113,8 +118,8 @@ final class TerminalCallbackBridge {
                 .actions,
                 "callback action=open_url kind=\(kind) url=\(TerminalDebugLog.describe(url))"
             )
-            (delegate as? any TerminalSurfaceOpenURLDelegate)?
-                .terminalDidRequestOpenURL(url, kind: kind)
+            return (delegate as? any TerminalSurfaceOpenURLDelegate)?
+                .terminalDidRequestOpenURL(url, kind: kind) ?? false
 
         case GHOSTTY_ACTION_MOUSE_OVER_LINK:
             let payload = action.action.mouse_over_link
@@ -148,6 +153,8 @@ final class TerminalCallbackBridge {
                 "callback action=\(TerminalDebugLog.describe(action.tag))"
             )
         }
+
+        return false
     }
 
     func handleClose(processAlive: Bool) {

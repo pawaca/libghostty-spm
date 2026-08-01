@@ -36,8 +36,22 @@ private enum TerminalCallbacks {
         let bridge = Unmanaged<TerminalCallbackBridge>
             .fromOpaque(bridgePtr)
             .takeUnretainedValue()
-        terminalRunOnMain {
-            bridge.handleAction(action)
+
+        // Ghostty reads this return value to decide whether to run its own
+        // fallback for the action (e.g. `open_url` spawns the system
+        // opener). That answer only exists when the bridge can run inline;
+        // off the main thread the action is delivered asynchronously and
+        // reported unhandled, same as before.
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                bridge.handleAction(action)
+            }
+        }
+
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                _ = bridge.handleAction(action)
+            }
         }
 
         return false

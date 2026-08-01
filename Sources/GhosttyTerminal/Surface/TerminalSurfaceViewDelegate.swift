@@ -99,10 +99,15 @@ public enum TerminalOpenURLKind: Sendable {
     }
 }
 
-/// User activated (cmd-clicked) a hyperlink inside the terminal grid.
+/// User activated (cmd-clicked) a hyperlink inside the terminal grid, or
+/// ghostty is handing back a file it wrote on the app's behalf
+/// (e.g. `write_screen_file:open`).
 @MainActor
 public protocol TerminalSurfaceOpenURLDelegate: TerminalSurfaceViewDelegate {
-    func terminalDidRequestOpenURL(_ url: String, kind: TerminalOpenURLKind)
+    /// Returns whether the app handled the request. `false` lets ghostty
+    /// fall back to its own opener (`/usr/bin/open` on macOS); `true`
+    /// suppresses that fallback entirely.
+    func terminalDidRequestOpenURL(_ url: String, kind: TerminalOpenURLKind) -> Bool
 }
 
 /// Mouse hovered over a recognized hyperlink. nil = hover ended / link lost.
