@@ -21,9 +21,12 @@ public enum GhosttyRuntimeResources {
     }
 
     static func configureEnvironment() {
+        // Skip Bundle.module lookup when the host app already provides
+        // resources — Bundle.module's generated accessor crashes in .app
+        // bundles assembled by deploy scripts (macOS codesign forbids
+        // content at the .app root where the accessor expects .bundle).
+        if getenv("GHOSTTY_RESOURCES_DIR") != nil { return }
         guard let path = directoryURL?.path else { return }
-        // Don't overwrite if the host app (e.g. PonyMux) already set this
-        // to its own resource directory before TerminalController.init().
         setenv("GHOSTTY_RESOURCES_DIR", path, 0)
     }
 }
