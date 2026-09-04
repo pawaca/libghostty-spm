@@ -39,7 +39,7 @@
             core.setDisplayVisible(visible)
         }
 
-        var surface: TerminalSurface? {
+        public var surface: TerminalSurface? {
             core.surface
         }
 
