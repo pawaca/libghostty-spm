@@ -22,6 +22,8 @@ public enum GhosttyRuntimeResources {
 
     static func configureEnvironment() {
         guard let path = directoryURL?.path else { return }
-        setenv("GHOSTTY_RESOURCES_DIR", path, 1)
+        // Don't overwrite if the host app (e.g. PonyMux) already set this
+        // to its own resource directory before TerminalController.init().
+        setenv("GHOSTTY_RESOURCES_DIR", path, 0)
     }
 }
