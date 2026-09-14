@@ -20,7 +20,8 @@ extension TerminalViewState:
     TerminalSurfaceCommandFinishedDelegate,
     TerminalSurfaceLifecycleDelegate,
     TerminalSurfaceTextSelectionRequestDelegate,
-    TerminalSurfaceClipboardConfirmationDelegate
+    TerminalSurfaceClipboardConfirmationDelegate,
+    TerminalSurfaceSearchDelegate
 {
     /// Applies a change to this state on the main queue's next turn.
     ///
@@ -139,6 +140,38 @@ extension TerminalViewState:
             return
         }
         onClipboardConfirmationRequest(request)
+    }
+
+    // MARK: - Search
+
+    public func terminalDidRequestStartSearch(_ needle: String?) {
+        onSearchStart?(needle)
+    }
+
+    public func terminalDidRequestEndSearch() {
+        onSearchEnd?()
+    }
+
+    public func terminalDidUpdateSearchTotal(_ total: Int) {
+        onSearchTotal?(total)
+        publishSoon {
+            let current = $0.searchStatus
+            $0.searchStatus = TerminalSearchStatus(
+                total: total,
+                selected: current?.selected ?? -1
+            )
+        }
+    }
+
+    public func terminalDidUpdateSearchSelected(_ selected: Int) {
+        onSearchSelected?(selected)
+        publishSoon {
+            let current = $0.searchStatus
+            $0.searchStatus = TerminalSearchStatus(
+                total: current?.total ?? -1,
+                selected: selected
+            )
+        }
     }
 
     public func terminalDidAttachSurface(_ surface: TerminalSurface) {
