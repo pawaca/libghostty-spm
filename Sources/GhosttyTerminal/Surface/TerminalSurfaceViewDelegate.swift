@@ -297,6 +297,28 @@ public protocol TerminalSurfaceLifecycleDelegate: TerminalSurfaceViewDelegate {
     func terminalDidDetachSurface()
 }
 
+// MARK: - Search
+
+/// Match-count snapshot from a terminal search. Both fields carry `-1` when
+/// the search produced no matches at all; `selected` is 1-based otherwise.
+public struct TerminalSearchStatus: Equatable, Sendable {
+    public let total: Int
+    public let selected: Int
+
+    public init(total: Int, selected: Int) {
+        self.total = total
+        self.selected = selected
+    }
+}
+
+@MainActor
+public protocol TerminalSurfaceSearchDelegate: TerminalSurfaceViewDelegate {
+    func terminalDidRequestStartSearch(_ needle: String?)
+    func terminalDidRequestEndSearch()
+    func terminalDidUpdateSearchTotal(_ total: Int)
+    func terminalDidUpdateSearchSelected(_ selected: Int)
+}
+
 // MARK: - Clipboard content
 
 /// One MIME-typed clipboard representation. Binary-safe: `data` may contain

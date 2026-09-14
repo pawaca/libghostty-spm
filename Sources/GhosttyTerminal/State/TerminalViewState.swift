@@ -35,6 +35,23 @@ public final class TerminalViewState: ObservableObject {
     /// OSC 11 while the surface lives.
     @Published public internal(set) var backgroundColor: TerminalColor
     var programBackgroundColor: TerminalColor?
+    /// Combined search match status — nil while no search is active. D-200:
+    /// total and selected arrive as separate callbacks but are published as one
+    /// value so SwiftUI never renders a stale half.
+    @Published public internal(set) var searchStatus: TerminalSearchStatus?
+
+    /// Host hook: the terminal wants the search bar shown (⌘F or equivalent).
+    /// `needle` carries the current selection text when there is one.
+    public var onSearchStart: ((String?) -> Void)?
+
+    /// Host hook: the terminal wants the search bar dismissed (Escape / end_search).
+    public var onSearchEnd: (() -> Void)?
+
+    /// Host hooks for search result updates (total match count / current selection).
+    /// Separate from `searchStatus` so that `@Observable` hosts can mirror
+    /// the values without crossing the ObservableObject observation boundary.
+    public var onSearchTotal: ((Int) -> Void)?
+    public var onSearchSelected: ((Int) -> Void)?
 
     public internal(set) weak var surface: TerminalSurface?
 
