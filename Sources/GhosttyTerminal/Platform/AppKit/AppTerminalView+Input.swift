@@ -29,8 +29,20 @@
             guard window?.firstResponder === self else { return false }
             guard let surface else { return false }
 
-            if keyIsBinding(event, on: surface) {
-                keyDown(with: event)
+            let isBinding = keyIsBinding(event, on: surface)
+            TerminalDebugLog.log(
+                .input,
+                "performKeyEquivalent isBinding=\(isBinding) chars=\(event.charactersIgnoringModifiers ?? "?") firstResponder=\(window?.firstResponder === self)"
+            )
+            if isBinding {
+                let action: ghostty_input_action_e = event.isARepeat
+                    ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+                var input = event.buildKeyInput(
+                    action: action,
+                    translationModifiers: event.modifierFlags
+                )
+                input.text = nil
+                surface.sendKeyEvent(input)
                 return true
             }
 
