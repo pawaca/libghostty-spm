@@ -1,11 +1,15 @@
 # Upstream upgrade, 2026-10-01
 
 This fork incorporates the wrapper changes from Lakr233/libghostty-spm
-`37557cd6db4f8af3157f90cd3ad549d1107a9ab1` (1.6.20260929).
+`a5785e01166131f0012280f1fa05a74a7402f29b` (based on 1.6.20260929).
 Ghostty moves from `82938b633ba646db38591d969c3c526332bd7e65` to
 `0081d4530929317364d3bfec5309e55238e4cd90`. Zig remains 0.16.0.
 
 ## Wrapper changes
+
+- Upgrade to DisplayLink 3.0 with view-bound display selection and pause/resume.
+- Replace blocking surface-test locks with an asynchronous gate and serialize
+  environment-sensitive runtime initialization on the main actor.
 
 - Preserve synchronized output during resize and hold the prior frame while
   the shell redraws its prompt, with bounded holds across resize races.

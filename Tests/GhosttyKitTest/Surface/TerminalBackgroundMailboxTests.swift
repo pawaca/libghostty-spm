@@ -9,8 +9,8 @@ struct TerminalBackgroundMailboxTests {
     @Test(arguments: [(false, true), (true, false), (false, false)])
     func `titles reach the host when rendering is suspended`(
         attached: Bool, active: Bool
-    ) throws {
-        let host = GhosttySurfaceHarness()
+    ) async throws {
+        let host = await GhosttySurfaceHarness.make()
         defer { host.tearDown() }
         let receiver = TitleReceiver()
         host.coordinator.delegate = receiver

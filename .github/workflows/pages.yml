@@ -19,6 +19,8 @@ concurrency:
 
 jobs:
   deploy:
+    # Forks opt in after enabling a Pages site with GitHub Actions as its source.
+    if: github.repository == 'Lakr233/libghostty-spm' || vars.ENABLE_DOCS_PAGES == 'true'
     name: Deploy GitHub Pages
     runs-on: ubuntu-latest
     environment:
