@@ -47,7 +47,7 @@ threads at teardown. Patch 0018 and the background-wakeup fix remain necessary.
 ## Release integration
 
 The new pin drops `Ghostty.build`; its storage tag is `upstream.0081d4530929`.
-The production manifest retains the available fork asset until the new patched
-XCFramework is published and its actual checksum is rendered by the release
-scripts. Local validation uses `Package.local.swift`. Updating only the Swift
-revision does not install the new engine or its closing-mailbox fix.
+The patched XCFramework has been published for all supported platforms. The
+production manifest points to that release with the checksum verified against
+the downloaded archive and the release asset digest. Consumers must update
+the Swift package revision to obtain both the wrapper and engine fixes.
