@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 if [ ! -f .root ]; then
-    echo "[*] malformed project structure"
+    echo "[!] repository root not found. Run this script from a libghostty-spm checkout."
     exit 1
 fi
 
@@ -36,7 +36,7 @@ if [[ "$INPUT_PATH" == *.zip ]]; then
     XCFRAMEWORK_PATH=$(find "$TEMP_DIR" -maxdepth 1 -name "*.xcframework" -type d | head -1)
 fi
 
-if [ -z "$XCFRAMEWORK_PATH" ] || [ ! -d "$XCFRAMEWORK_PATH" ]; then
+if [ ! -d "$XCFRAMEWORK_PATH" ]; then
     echo "[!] xcframework not found in input: $INPUT_PATH"
     exit 1
 fi
@@ -107,6 +107,8 @@ for library in libraries:
         ("ios", None): {"arm64"},
         ("ios", "maccatalyst"): {"arm64", "x86_64"},
         ("ios", "simulator"): {"arm64", "x86_64"},
+        ("xros", None): {"arm64"},
+        ("xros", "simulator"): {"arm64", "x86_64"},
     }.get((platform, platform_variant))
     if expected_architectures is not None and actual_architectures != expected_architectures:
         raise SystemExit(

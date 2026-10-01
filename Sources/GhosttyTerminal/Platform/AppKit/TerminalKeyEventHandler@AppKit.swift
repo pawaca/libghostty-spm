@@ -11,7 +11,7 @@
 //  drift from upstream keyboard/IME semantics.
 //
 
-#if canImport(AppKit) && !canImport(UIKit)
+#if !canImport(UIKit) && canImport(AppKit)
     import AppKit
     import GhosttyKit
 
@@ -24,12 +24,6 @@
         init(view: AppTerminalView) {
             self.view = view
             inputMethodHandler = TerminalTextInputHandler(view: view)
-        }
-
-        nonisolated static func shouldUseDirectInput(
-            modifierFlags: NSEvent.ModifierFlags
-        ) -> Bool {
-            modifierFlags.intersection([.shift, .control, .option, .command]).isEmpty
         }
 
         nonisolated static func shouldReplayInterpretedCommand(
@@ -45,10 +39,6 @@
         func handleKeyDown(with event: NSEvent) {
             guard let view, let surface = view.surface else { return }
 
-            if handleDirectInputIfNeeded(event) {
-                return
-            }
-
             let action: ghostty_input_action_e = event.isARepeat
                 ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
             let translationEvent = translatedEvent(for: event, on: surface)
@@ -57,7 +47,7 @@
             interpretedCommandSelector = nil
             let markedTextBefore = inputMethodHandler?.hasMarkedText == true
             let keyboardIdBefore = markedTextBefore ? nil : KeyboardLayout.id
-            view.lastPerformKeyEvent = nil
+            view.keyEcho.lastPerformKeyEvent = nil
             view.interpretKeyEvents([translationEvent])
             if !markedTextBefore, keyboardIdBefore != KeyboardLayout.id {
                 _ = inputMethodHandler?.finishCollectingText()
@@ -106,9 +96,6 @@
 
         func handleKeyUp(with event: NSEvent) {
             guard let view, let surface = view.surface else { return }
-            if shouldBypassGhosttyForDirectInput(event) {
-                return
-            }
             var input = event.buildKeyInput(action: GHOSTTY_ACTION_RELEASE)
             input.text = nil
             surface.sendKeyEvent(input)
@@ -184,36 +171,6 @@
                 input.text = ptr
                 surface.sendKeyEvent(input)
             }
-        }
-
-        private func handleDirectInputIfNeeded(_ event: NSEvent) -> Bool {
-            guard let view else { return false }
-            // During IME composition, AppKit needs to keep ownership of editing
-            // commands so marked text can shrink, cancel, and move correctly.
-            guard inputMethodHandler?.hasMarkedText != true else { return false }
-            guard Self.shouldUseDirectInput(modifierFlags: event.modifierFlags) else {
-                return false
-            }
-            let delivery = TerminalHardwareKeyRouter.routeAppKit(
-                keyCode: event.keyCode,
-                backend: view.configuration.backend
-            )
-            guard case let .data(sequence) = delivery else { return false }
-            guard case let .inMemory(session) = view.configuration.backend else { return false }
-
-            session.sendInput(sequence)
-            return true
-        }
-
-        private func shouldBypassGhosttyForDirectInput(_ event: NSEvent) -> Bool {
-            guard let view else { return false }
-            guard Self.shouldUseDirectInput(modifierFlags: event.modifierFlags) else {
-                return false
-            }
-            return TerminalHardwareKeyRouter.routeAppKit(
-                keyCode: event.keyCode,
-                backend: view.configuration.backend
-            ).isDirectInput
         }
 
         private func translatedEvent(

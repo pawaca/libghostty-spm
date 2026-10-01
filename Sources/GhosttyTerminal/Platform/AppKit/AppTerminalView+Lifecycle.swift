@@ -5,8 +5,13 @@
 //  Created by Lakr233 on 2026/3/17.
 //
 
-#if canImport(AppKit) && !canImport(UIKit)
+#if !canImport(UIKit) && canImport(AppKit)
     import AppKit
+
+    /// SwiftUI focus-bridge hooks; behavior lives in +Lifecycle.
+    struct FocusBridgeState {
+        var onFocusChange: ((Bool) -> Void)?
+    }
 
     extension AppTerminalView {
         func setupTrackingArea() {
@@ -38,14 +43,14 @@
         override open func becomeFirstResponder() -> Bool {
             let result = super.becomeFirstResponder()
             core.setFocus(true)
-            onFocusChange?(true)
+            focusBridge.onFocusChange?(true)
             return result
         }
 
         override open func resignFirstResponder() -> Bool {
             let result = super.resignFirstResponder()
             core.setFocus(false)
-            onFocusChange?(false)
+            focusBridge.onFocusChange?(false)
             return result
         }
 
@@ -63,7 +68,6 @@
                 }
                 updateMetalLayerMetrics()
                 updateColorScheme()
-                core.startDisplayLink()
                 core.requestImmediateTick()
 
                 NotificationCenter.default.addObserver(
@@ -93,22 +97,30 @@
                     name: NSWindow.didChangeScreenNotification,
                     object: window
                 )
+                // Same runloop hop as `requestFocus`: attaching can happen
+                // mid SwiftUI update, where the first-responder dance must
+                // not mutate focus state.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    (delegate as? TerminalViewState)?.replayPendingFocusIfNeeded()
+                }
             } else {
                 core.stopDisplayLink()
                 core.setFocus(false)
             }
         }
 
+        // Window key state is not a first-responder change: reporting it
+        // through the focus bridge flips the host's FocusState, whose
+        // synchronizeFocus then resigns a view that is still first responder.
         @objc func windowDidBecomeKey(_: Notification) {
             let focused = window?.isKeyWindow == true
                 && window?.firstResponder === self
             core.setFocus(focused)
-            onFocusChange?(focused)
         }
 
         @objc func windowDidResignKey(_: Notification) {
             core.setFocus(false)
-            onFocusChange?(false)
         }
 
         @objc func windowDidChangeScreen(_: Notification) {

@@ -17,11 +17,21 @@ struct TerminalViewRepresentable {
     let context: TerminalViewState
     let controller: TerminalController
     let configuration: TerminalSurfaceOptions
+    /// A stored input, not read off `context` in the update pass: SwiftUI
+    /// runs `updateNSView`/`updateUIView` only when the representable's own
+    /// properties differ from the previous value. A flag read through the
+    /// class reference is invisible to that comparison, and the update pass
+    /// was skipped even for the visible surface.
+    let isSurfaceVisible: Bool
     let focusBinding: TerminalFocusBinding?
 
     func configureView(_ view: TerminalView, initial: Bool) {
         if initial {
             view.delegate = context
+        }
+
+        if context.attachedView !== view {
+            context.attachedView = view
         }
 
         if let currentController = view.controller, currentController === controller {
@@ -30,9 +40,27 @@ struct TerminalViewRepresentable {
             view.controller = controller
         }
 
-        if !view.configuration.isEquivalent(to: configuration) {
-            view.configuration = configuration
+        // Unconditional: the coordinator's didSet gates rebuilds on
+        // isEquivalent, which ignores resizeThrottleMilliseconds on purpose.
+        view.configuration = configuration
+
+        // Forward only changes: stamping unconditionally would revert an
+        // imperative `setSurfaceVisible` call on every SwiftUI update and
+        // pay a per-update C call for nothing.
+        if view.core.hostDeclaredDisplayVisible != isSurfaceVisible {
+            view.core.hostDeclaredDisplayVisible = isSurfaceVisible
+            view.setSurfaceVisible(isSurfaceVisible)
         }
+
+        #if canImport(UIKit)
+            #if !targetEnvironment(macCatalyst)
+                let accessoryItems = context.inputAccessoryItems
+                    ?? TerminalInputAccessoryItem.defaultItems
+                if view.inputAccessoryItems != accessoryItems {
+                    view.inputAccessoryItems = accessoryItems
+                }
+            #endif
+        #endif
     }
 
     static func synchronizeFocus(_ view: TerminalView, with binding: TerminalFocusBinding?) {
@@ -41,10 +69,14 @@ struct TerminalViewRepresentable {
         DispatchQueue.main.async { [weak view] in
             #if canImport(UIKit)
                 guard let view, view.window != nil else { return }
-                if binding.isFocused {
-                    if !view.isFirstResponder { view.becomeFirstResponder() }
-                } else if view.isFirstResponder {
-                    _ = view.resignFirstResponder()
+                // Acquire-only: `FocusState` resets itself to nil whenever
+                // SwiftUI's own focus system re-evaluates (no native focusable
+                // view anchors it), so treating false as "resign" tears the
+                // keyboard down right after it opens. Moving focus between
+                // surfaces doesn't need the resign either — UIKit retires the
+                // old first responder when the next surface acquires.
+                if binding.isFocused, !view.isFirstResponder {
+                    view.becomeFirstResponder()
                 }
             #elseif canImport(AppKit)
                 guard let view, let window = view.window else { return }

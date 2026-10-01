@@ -18,7 +18,6 @@ final class ViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Terminal"
-        view.backgroundColor = .systemBackground
         view.isOpaque = true
         configureTerminalView()
         configureThemeMenu()
@@ -48,7 +47,7 @@ final class ViewController: UIViewController {
         terminalView.delegate = self
         terminalView.isAccessibilityElement = true
         terminalView.accessibilityIdentifier = "terminal.surface"
-        terminalView.accessibilityLabel = "Terminal Surface"
+        terminalView.accessibilityLabel = "Terminal"
         terminalView.configuration = TerminalSurfaceOptions(
             backend: .inMemory(shellSession.terminalSession)
         )
@@ -64,6 +63,22 @@ final class ViewController: UIViewController {
             terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             terminalView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
+
+        #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+                let output = TerminalOutputAccessibilityView(
+                    session: shellSession.terminalSession
+                )
+                output.translatesAutoresizingMaskIntoConstraints = false
+                view.addSubview(output)
+                NSLayoutConstraint.activate([
+                    output.topAnchor.constraint(equalTo: view.topAnchor),
+                    output.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                    output.widthAnchor.constraint(equalToConstant: 1),
+                    output.heightAnchor.constraint(equalToConstant: 1),
+                ])
+            }
+        #endif
     }
 
     private func activateTerminal() {
@@ -101,8 +116,10 @@ final class ViewController: UIViewController {
 
     private func applyBackgroundForCurrentAppearance() {
         let key = isDarkMode ? Self.darkThemeKey : Self.lightThemeKey
-        guard let theme = Self.savedThemeDefinition(forKey: key) else { return }
-        if let bgColor = UIColor(hexString: theme.background) {
+        // Backgrounds of the `.afterglow` / `.alabaster` fallbacks in savedTerminalTheme().
+        let defaultBackground = isDarkMode ? "212121" : "F7F7F7"
+        let background = Self.savedThemeDefinition(forKey: key)?.background ?? defaultBackground
+        if let bgColor = UIColor(hexString: background) {
             view.backgroundColor = bgColor
         }
     }
@@ -175,10 +192,10 @@ final class ViewController: UIViewController {
             grouped[key, default: []].append(theme)
         }
 
-        return grouped.keys.sorted().map { key in
+        return grouped.sorted { $0.key < $1.key }.map { key, themes in
             UIMenu(
                 title: key,
-                children: grouped[key]!.map { themeAction(for: $0) }
+                children: themes.map { themeAction(for: $0) }
             )
         }
     }
@@ -192,18 +209,40 @@ final class ViewController: UIViewController {
     private func applyTheme(_ theme: GhosttyThemeDefinition) {
         saveTheme(theme)
         controller.setTheme(Self.savedTerminalTheme())
-
-        if let bgColor = UIColor(hexString: theme.background) {
-            view.backgroundColor = bgColor
-        }
+        applyBackgroundForCurrentAppearance()
     }
 }
+
+#if DEBUG
+    private final class TerminalOutputAccessibilityView: UIView {
+        private let session: InMemoryTerminalSession
+
+        init(session: InMemoryTerminalSession) {
+            self.session = session
+            super.init(frame: .zero)
+            isAccessibilityElement = true
+            accessibilityIdentifier = "terminal.output"
+            accessibilityLabel = "Terminal Output"
+            isUserInteractionEnabled = false
+            alpha = 0.01
+        }
+
+        @available(*, unavailable)
+        required init?(coder _: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override var accessibilityValue: String? {
+            get { session.readViewportText() }
+            set {}
+        }
+    }
+#endif
 
 // MARK: - Terminal Callbacks
 
 extension ViewController:
     TerminalSurfaceTitleDelegate,
-    TerminalSurfaceResizeDelegate,
     TerminalSurfaceCloseDelegate,
     TerminalSurfaceTextSelectionRequestDelegate,
     UIAdaptivePresentationControllerDelegate
@@ -211,8 +250,6 @@ extension ViewController:
     func terminalDidChangeTitle(_ title: String) {
         self.title = title
     }
-
-    func terminalDidResize(columns _: Int, rows _: Int) {}
 
     func terminalDidClose(processAlive _: Bool) {
         ApplicationExitController.requestExit()

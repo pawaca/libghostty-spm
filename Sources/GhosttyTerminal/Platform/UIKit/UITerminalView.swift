@@ -12,37 +12,45 @@
     @MainActor
     open class UITerminalView: UIView {
         let core = TerminalSurfaceCoordinator()
-        var momentumDisplayLink: CADisplayLink?
-        var momentumVelocity: CGPoint = .zero
+
+        // Grouped view state, one struct per concern. Each state type is
+        // defined in the extension file that owns the behavior (+Keyboard,
+        // +Interaction, +PinchZoom, +Lifecycle, +UITextInput); the storage
+        // lives here because extensions cannot add stored properties. A new
+        // stored value joins (or starts) its concern's struct — the root
+        // class declares only these `var xxx: XxxState = .init()` lines,
+        // plus the lazy objects that need `self`. Constants live as statics
+        // in the extension that uses them.
+        var hardwareKeyboard: HardwareKeyboardState = .init()
+        var pointer: PointerInteractionState = .init()
+        var momentumScroll: MomentumScrollState = .init()
+        var focusBridge: FocusBridgeState = .init()
+        var textInputBridge: TextInputBridgeState = .init()
         #if !targetEnvironment(macCatalyst)
-            static let minFontSize: Float = 4
-            static let maxFontSize: Float = 64
+            var softwareKeyboard: SoftwareKeyboardState = .init()
+            var fontZoom: FontZoomState = .init()
         #endif
-        var activePointerButton: ghostty_input_mouse_button_e?
-        var pointerSelectionStartPoint: CGPoint?
-        var lastPointerSelectionRect: CGRect?
-        var pendingSelectionMenuPoint: CGPoint?
-        #if !targetEnvironment(macCatalyst)
-            var indirectPointerPanOwnsTouchSequence = false
-            var suppressNextIndirectPointerTouchEnd = false
-        #endif
+
         lazy var selectionContextMenuInteraction = UIContextMenuInteraction(delegate: self)
-        var hardwareKeyHandled = false
-        let touchScrollMultiplier: CGFloat = 3.0
-        #if !targetEnvironment(macCatalyst)
-            var currentFontSize: Float = 14
-            var lastPinchScale: CGFloat = 1.0
-        #endif
         lazy var inputHandler = TerminalTextInputHandler(view: self)
-        weak var _inputDelegate: (any UITextInputDelegate)?
-        var onFocusChange: ((Bool) -> Void)?
+
+        /// Backing store for the iOS 16+ edit-menu interaction — untyped
+        /// because stored properties cannot carry availability.
+        private var _selectionEditMenuInteraction: Any?
+        @available(iOS 16.0, *)
+        var selectionEditMenuInteraction: UIEditMenuInteraction {
+            if let interaction = _selectionEditMenuInteraction as? UIEditMenuInteraction {
+                return interaction
+            }
+            let interaction = UIEditMenuInteraction(delegate: nil)
+            addInteraction(interaction)
+            _selectionEditMenuInteraction = interaction
+            return interaction
+        }
 
         #if !targetEnvironment(macCatalyst)
             lazy var terminalInputAccessory = TerminalInputAccessoryView(terminalView: self)
-            let stickyModifiers = TerminalStickyModifierState()
-            var softwareKeyboardVisible = false
-            var pendingKeyboardDismissOnTouchEnd = false
-            var touchDidScrollDuringCurrentTouch = false
+            let stickyModifiers: TerminalStickyModifierState = .init()
         #endif
 
         #if !targetEnvironment(macCatalyst)
@@ -55,6 +63,19 @@
                 didSet {
                     terminalInputAccessory.rebuildContent()
                     reloadInputViews()
+                }
+            }
+
+            /// Toggles the software keyboard the way a clean tap does: the
+            /// touch path calls this after the tap's click has been sent.
+            /// Declared in the class body so a host's `makePlatformView`
+            /// subclass can override it — a keyboard lock overrides to do
+            /// nothing, and the click still lands.
+            open func toggleSoftwareKeyboard() {
+                if softwareKeyboard.isVisible {
+                    resignFirstResponder()
+                } else {
+                    becomeFirstResponder()
                 }
             }
         #endif
@@ -71,10 +92,30 @@
 
         open var configuration: TerminalSurfaceOptions {
             get { core.configuration }
-            set { core.configuration = newValue }
+            set {
+                #if !targetEnvironment(macCatalyst)
+                    // SwiftUI stamps the options on every update; only a
+                    // changed fontSize rebuilds the surface at a new size,
+                    // so only then does the pinch counter follow it.
+                    if newValue.fontSize != core.configuration.fontSize {
+                        fontZoom.currentFontSize = newValue.fontSize ?? 14
+                    }
+                #endif
+                core.configuration = newValue
+            }
         }
 
-        var surface: TerminalSurface? {
+        /// Whether this surface should keep drawing — the UIKit twin of the
+        /// AppKit view's method of the same name. A host that keeps several
+        /// surfaces mounted at once (tabs hidden behind `opacity(0)`) marks
+        /// the hidden ones invisible: the surface keeps its grid, scrollback,
+        /// and session — only rendering stops and the display link is
+        /// released.
+        open func setSurfaceVisible(_ visible: Bool) {
+            core.setDisplayVisible(visible)
+        }
+
+        public var surface: TerminalSurface? {
             core.surface
         }
 
@@ -104,7 +145,7 @@
 
             core.isAttached = { [weak self] in self?.window != nil }
             core.scaleFactor = { [weak self] in
-                Double(self?.resolvedDisplayScale() ?? UIScreen.main.nativeScale)
+                Double(self?.resolvedDisplayScale() ?? UITerminalView.fallbackDisplayScale)
             }
             core.viewSize = { [weak self] in
                 guard let self else { return (0, 0) }
@@ -125,6 +166,9 @@
             core.onCellSizeDidChange = { [weak self] in
                 self?.refreshTextInputGeometry(reason: "cell-size-action")
             }
+            core.onMouseShape = { [weak self] shape in
+                self?.applyMouseShape(shape)
+            }
             core.onPostRender = { [weak self] in
                 self?.enforceSublayerScale()
             }
@@ -142,7 +186,7 @@
                 context: "selectionMenuPoint",
                 point: point
             )
-            if let rect = lastPointerSelectionRect {
+            if let rect = pointer.lastSelectionRect {
                 let pointIsInsidePointerSelection = rect.insetBy(dx: -4, dy: -4).contains(point)
                 guard pointIsInsidePointerSelection else {
                     TerminalDebugLog.log(
@@ -190,13 +234,24 @@
 
         open func showSelectionCopyMenu(at point: CGPoint) {
             becomeFirstResponder()
-            let menu = UIMenuController.shared
-            menu.menuItems = nil
-            menu.showMenu(
-                from: self,
-                rect: CGRect(x: point.x, y: point.y, width: 1, height: 1)
-            )
-            menu.update()
+            if #available(iOS 16.0, *) {
+                // UIMenuController stopped presenting anything on modern
+                // iOS — the menu silently never appears. The edit-menu
+                // interaction is its replacement; content still comes from
+                // the responder chain (canPerformAction), so Copy shows
+                // exactly when a selection exists.
+                selectionEditMenuInteraction.presentEditMenu(
+                    with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point)
+                )
+            } else {
+                let menu = UIMenuController.shared
+                menu.menuItems = nil
+                menu.showMenu(
+                    from: self,
+                    rect: CGRect(x: point.x, y: point.y, width: 1, height: 1)
+                )
+                menu.update()
+            }
         }
 
         @discardableResult
@@ -262,11 +317,16 @@
 
             @objc func keyboardDidShow(_: Notification) {
                 guard isFirstResponder else { return }
-                softwareKeyboardVisible = true
+                // The accessory-only bar of a hardware keyboard counts too:
+                // a tap on the terminal is the only way to put the keyboard
+                // UI away, and resigning is no longer destructive — the next
+                // tap (or pointer click, or the host's focus handoff)
+                // re-acquires first responder and hardware input with it.
+                softwareKeyboard.isVisible = true
             }
 
             @objc func keyboardDidHide(_: Notification) {
-                softwareKeyboardVisible = false
+                softwareKeyboard.isVisible = false
             }
         #endif
 

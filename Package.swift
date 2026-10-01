@@ -7,6 +7,7 @@ let package = Package(
         .iOS(.v15),
         .macOS(.v13),
         .macCatalyst(.v15),
+        .visionOS(.v1),
     ],
     products: [
         .library(name: "GhosttyKit", targets: ["GhosttyKit"]),
@@ -15,7 +16,7 @@ let package = Package(
         .library(name: "GhosttyTheme", targets: ["GhosttyTheme"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/Lakr233/MSDisplayLink.git", from: "2.1.0"),
+        .package(url: "https://github.com/Lakr233/MSDisplayLink.git", from: "2.2.0"),
     ],
     targets: [
         .target(
@@ -30,7 +31,11 @@ let package = Package(
         .target(
             name: "GhosttyTerminal",
             dependencies: ["GhosttyKit", "MSDisplayLink"],
-            path: "Sources/GhosttyTerminal"
+            path: "Sources/GhosttyTerminal",
+            resources: [
+                .copy("Resources/Ghostty"),
+                .copy("Resources/terminfo"),
+            ]
         ),
         .target(
             name: "ShellCraftKit",
@@ -45,8 +50,8 @@ let package = Package(
         ),
         .binaryTarget(
             name: "libghostty",
-            url: "https://github.com/Lakr233/libghostty-spm/releases/download/storage.1.3.1/GhosttyKit.xcframework.zip",
-            checksum: "cfb3fbbfe1365e4c90e01969e2576b4dfa33f04975bcafd84c6368514f791fe9"
+            url: "https://github.com/pawaca/libghostty-spm/releases/download/upstream.82938b633ba6-2/GhosttyKit.xcframework.zip",
+            checksum: "1ea70d6b2a34c7b8cd5288b9f4a7d9da9aac9cccd4966f1e3a80fbeda160ca45"
         ),
         .testTarget(
             name: "GhosttyKitTest",

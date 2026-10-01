@@ -7,6 +7,7 @@ let package = Package(
         .iOS(.v15),
         .macOS(.v13),
         .macCatalyst(.v15),
+        .visionOS(.v1),
     ],
     products: [
         .library(name: "GhosttyKit", targets: ["GhosttyKit"]),
@@ -15,7 +16,7 @@ let package = Package(
         .library(name: "GhosttyTheme", targets: ["GhosttyTheme"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/Lakr233/MSDisplayLink.git", from: "2.1.0"),
+        .package(url: "https://github.com/Lakr233/MSDisplayLink.git", from: "2.2.0"),
     ],
     targets: [
         .target(
@@ -30,7 +31,11 @@ let package = Package(
         .target(
             name: "GhosttyTerminal",
             dependencies: ["GhosttyKit", "MSDisplayLink"],
-            path: "Sources/GhosttyTerminal"
+            path: "Sources/GhosttyTerminal",
+            resources: [
+                .copy("Resources/Ghostty"),
+                .copy("Resources/terminfo"),
+            ]
         ),
         .target(
             name: "ShellCraftKit",

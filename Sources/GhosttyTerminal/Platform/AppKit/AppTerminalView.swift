@@ -5,7 +5,7 @@
 //  Created by Lakr233 on 2026/3/16.
 //
 
-#if canImport(AppKit) && !canImport(UIKit)
+#if !canImport(UIKit) && canImport(AppKit)
     import AppKit
     import GhosttyKit
 
@@ -14,11 +14,14 @@
         let core = TerminalSurfaceCoordinator()
         var metalLayer: CAMetalLayer?
         var inputHandler: TerminalKeyEventHandler?
-        var lastPerformKeyEvent: TimeInterval?
-        var pointerSelectionStartPoint: CGPoint?
-        var lastPointerSelectionRect: CGRect?
-        var pendingSelectionMenuPoint: CGPoint?
-        var onFocusChange: ((Bool) -> Void)?
+
+        // Grouped view state, one struct per concern — same convention as
+        // the UIKit twin: each state type is defined in the extension file
+        // that owns the behavior (+Input, +Lifecycle); the storage lives
+        // here because extensions cannot add stored properties.
+        var keyEcho: KeyEchoState = .init()
+        var pointer: PointerSelectionState = .init()
+        var focusBridge: FocusBridgeState = .init()
 
         open weak var delegate: (any TerminalSurfaceViewDelegate)? {
             get { core.delegate }
@@ -37,6 +40,14 @@
 
         open func setSurfaceVisible(_ visible: Bool) {
             core.setDisplayVisible(visible)
+        }
+
+        /// Adjusts this surface's resize coalescing window without rebuilding
+        /// it. Overrides `TerminalSurfaceOptions.resizeThrottleMilliseconds`,
+        /// which is the declarative home for the same policy and the one every
+        /// platform can reach; pass `nil` to fall back to it.
+        open func setResizeThrottle(milliseconds: Double?) {
+            core.resizeThrottleInterval = milliseconds.map { max(0, $0) / 1000 }
         }
 
         public var surface: TerminalSurface? {
@@ -98,35 +109,14 @@
             }
         }
 
+        // Upstream's rule: Copy is offered whenever ghostty has a selection.
+        // A cached drag rect went stale on scroll and select_all, and the
+        // quicklook-word test misses whitespace inside a selection.
         open func selectionMenuPoint(at point: CGPoint) -> CGPoint? {
             guard surface?.hasSelection() == true else {
                 TerminalDebugLog.log(
                     .input,
                     "selection menu miss point=\(selectionPointDescription(point))"
-                )
-                return nil
-            }
-
-            if let rect = lastPointerSelectionRect {
-                guard rect.insetBy(dx: -4, dy: -4).contains(point) else {
-                    TerminalDebugLog.log(
-                        .input,
-                        "selection menu miss point=\(selectionPointDescription(point)) outside pointer selection"
-                    )
-                    return nil
-                }
-
-                TerminalDebugLog.log(
-                    .input,
-                    "selection menu hit point=\(selectionPointDescription(point)) inside pointer selection"
-                )
-                return point
-            }
-
-            guard surface?.selectionContainsQuicklookWord() == true else {
-                TerminalDebugLog.log(
-                    .input,
-                    "selection menu miss point=\(selectionPointDescription(point)) outside quicklook word"
                 )
                 return nil
             }

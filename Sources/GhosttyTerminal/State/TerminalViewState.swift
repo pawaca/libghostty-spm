@@ -6,11 +6,14 @@
 //
 
 import Foundation
+import GhosttyKit
 import SwiftUI
 
 @MainActor
 public final class TerminalViewState: ObservableObject {
     @Published public internal(set) var title: String = ""
+    var pendingTitle: String?
+    var titlePublicationScheduled = false
     @Published public internal(set) var surfaceSize: TerminalGridMetrics?
     @Published public internal(set) var isFocused: Bool = false
 
@@ -30,20 +33,142 @@ public final class TerminalViewState: ObservableObject {
     /// update). Drives a host-drawn scrollbar.
     @Published public internal(set) var scrollbar: TerminalScrollbar?
 
+    /// The effective config's `background`, or the color a program set with
+    /// OSC 11 while the surface lives.
+    @Published public internal(set) var backgroundColor: TerminalColor
+    var programBackgroundColor: TerminalColor?
+    /// Combined search match status — nil while no search is active. D-200:
+    /// total and selected arrive as separate callbacks but are published as one
+    /// value so SwiftUI never renders a stale half.
+    @Published public internal(set) var searchStatus: TerminalSearchStatus?
+
+    /// Host hook: the terminal wants the search bar shown (⌘F or equivalent).
+    /// `needle` carries the current selection text when there is one.
+    public var onSearchStart: ((String?) -> Void)?
+
+    /// Host hook: the terminal wants the search bar dismissed (Escape / end_search).
+    public var onSearchEnd: (() -> Void)?
+
+    /// Host hooks for search result updates (total match count / current selection).
+    /// Separate from `searchStatus` so that `@Observable` hosts can mirror
+    /// the values without crossing the ObservableObject observation boundary.
+    public var onSearchTotal: ((Int) -> Void)?
+    public var onSearchSelected: ((Int) -> Void)?
+
     public internal(set) weak var surface: TerminalSurface?
+
+    /// The platform view currently presenting this state, set by the SwiftUI
+    /// representable. Weak: the state outlives detached views.
+    weak var attachedView: TerminalView?
+
+    /// The platform view currently presenting this state, for host work that
+    /// needs the real view — a rendered ``TerminalView/snapshotImage()``,
+    /// coordinate math. `nil` while no view presents this state; weak like
+    /// `attachedView`, because the state outlives detached views.
+    public var attachedPlatformView: TerminalView? { attachedView }
+
+    /// Factory for the platform view the SwiftUI representable creates.
+    /// Hosts that need their own view behavior — an interaction lock,
+    /// custom hit testing — return a `TerminalView` subclass here; `nil`
+    /// (the default) instantiates the base class. Read once, when the
+    /// surface view is made: set it before the surface first appears.
+    public var makePlatformView: (@MainActor () -> TerminalView)?
+    private var pendingFocusRequest = false
+
+    /// Whether the attached surface should keep drawing. Hosts that keep
+    /// several surfaces mounted at once (tabs hidden behind `opacity(0)`)
+    /// set this false on the hidden ones: the surface keeps its grid,
+    /// scrollback, and session — only rendering stops and the display link
+    /// is released, instead of every mounted tab drawing frames nobody
+    /// sees. Defaults to true.
+    @Published public var isSurfaceVisible: Bool = true
 
     @Published public var configuration: TerminalSurfaceOptions = .init()
     public var onClose: ((Bool) -> Void)?
     @Published public internal(set) var controller: TerminalController
 
-    /// Sends text to the attached surface.
+    #if canImport(UIKit)
+        #if !targetEnvironment(macCatalyst)
+            /// Items of the software keyboard's input accessory bar, in order.
+            /// `nil` shows `TerminalInputAccessoryItem.defaultItems`; an empty
+            /// array hides the bar. Applied to the platform view by the SwiftUI
+            /// representable.
+            @Published public var inputAccessoryItems: [TerminalInputAccessoryItem]?
+        #endif
+    #endif
+
+    /// Host hook for the iOS long-press text-selection flow. Setting this is
+    /// the opt-in: while it is `nil` the long-press recognizer stays inactive,
+    /// exactly as if the delegate never adopted
+    /// ``TerminalSurfaceTextSelectionRequestDelegate``.
+    public var onTextSelectionRequest: ((TerminalTextSelectionRequest) -> Void)?
+
+    /// Host hook for clipboard decisions ghostty will not make alone: a
+    /// program reading the clipboard through OSC 52 (`clipboard-read = ask`,
+    /// the default), writing it when `clipboard-write = ask`, or a paste
+    /// that paste protection flagged as unsafe. The host presents the
+    /// request and answers it with ``TerminalClipboardConfirmationRequest/respond(allow:)``.
+    /// While this is `nil`, a program's read or write is denied silently and
+    /// a paste the user started is allowed; a host that wants programs to
+    /// read the clipboard, or wants a say on unsafe pastes, sets it.
+    public var onClipboardConfirmationRequest: ((TerminalClipboardConfirmationRequest) -> Void)?
+
+    /// Hands keyboard focus to the attached terminal view, imperatively.
+    ///
+    /// The SwiftUI `terminalFocused` bridge is best-effort: with no native
+    /// focusable view anchoring the `FocusState`, SwiftUI's focus system can
+    /// reset the state to nil before the bridge acts on it, leaving the
+    /// previously focused surface holding first responder — and eating every
+    /// hardware key. Hosts that must move focus deterministically (switching
+    /// tabs, dismissing a cover) call this; a request that lands before the
+    /// view is in a window replays once it attaches.
+    public func requestFocus() {
+        pendingFocusRequest = true
+        // Hop the runloop: hosts call this from SwiftUI `onChange`, and the
+        // first-responder dance writes focus state that must not mutate
+        // SwiftUI state mid-update.
+        DispatchQueue.main.async { [weak self] in
+            self?.replayPendingFocusIfNeeded()
+        }
+    }
+
+    func replayPendingFocusIfNeeded() {
+        guard pendingFocusRequest else { return }
+        guard let view = attachedView, view.acquireProgrammaticFocus() else {
+            return
+        }
+        pendingFocusRequest = false
+    }
+
+    /// Pastes text into the attached surface. This is the text path: a
+    /// program that enabled bracketed paste receives it framed as a paste,
+    /// so a `\r` in it lands in the shell's edit line instead of running
+    /// it. Keystrokes — Enter, Tab, Ctrl+C — go through ``sendKey(_:)``.
     @discardableResult
-    public func send(_ text: String) -> Bool {
+    public func paste(text: String) -> Bool {
         guard let surface else {
-            TerminalDebugLog.log(.input, "view state send ignored: missing surface")
+            TerminalDebugLog.log(.input, "view state paste ignored: missing surface")
             return false
         }
-        return surface.sendText(text)
+        return surface.paste(text: text)
+    }
+
+    /// Presses and releases a key on the attached surface, as if typed on a
+    /// hardware keyboard — see ``TerminalSurface/sendKey(_:)``.
+    @discardableResult
+    public func sendKey(_ press: TerminalKeyPress) -> Bool {
+        guard let surface else {
+            TerminalDebugLog.log(.input, "view state key ignored: missing surface")
+            return false
+        }
+        return surface.sendKey(press)
+    }
+
+    /// ``sendKey(_:)`` for a key and its modifiers: `sendKey(.enter)`,
+    /// `sendKey(.c, modifiers: .ctrl)`.
+    @discardableResult
+    public func sendKey(_ key: TerminalKey, modifiers: TerminalInputModifiers = []) -> Bool {
+        sendKey(TerminalKeyPress(key, modifiers: modifiers))
     }
 
     /// Invoke a named Ghostty binding action on the attached surface.
@@ -67,6 +192,40 @@ public final class TerminalViewState: ObservableObject {
         surface?.scrollToRow(row) ?? false
     }
 
+    /// Whether the application currently owns the mouse (DEC 1000/1002/1003).
+    public var isMouseCaptured: Bool {
+        surface?.isMouseCaptured ?? false
+    }
+
+    public func sendMousePos(
+        x: Double,
+        y: Double,
+        modifiers: TerminalInputModifiers = []
+    ) {
+        surface?.sendMousePos(x: x, y: y, modifiers: modifiers)
+    }
+
+    @discardableResult
+    public func sendMouseButton(
+        state: ghostty_input_mouse_state_e,
+        button: ghostty_input_mouse_button_e,
+        modifiers: TerminalInputModifiers = []
+    ) -> Bool {
+        surface?.sendMouseButton(
+            state: state,
+            button: button,
+            modifiers: modifiers
+        ) ?? false
+    }
+
+    public func sendMouseScroll(
+        x: Double,
+        y: Double,
+        mods: TerminalScrollModifiers = TerminalScrollModifiers(precision: true)
+    ) {
+        surface?.sendMouseScroll(x: x, y: y, mods: mods)
+    }
+
     public convenience init() {
         self.init(configSource: .none)
     }
@@ -84,15 +243,18 @@ public final class TerminalViewState: ObservableObject {
         theme: TerminalTheme = .default,
         terminalConfiguration: TerminalConfiguration = .init()
     ) {
-        controller = TerminalController(
+        let controller = TerminalController(
             configSource: configSource,
             theme: theme,
             terminalConfiguration: terminalConfiguration
         )
+        self.controller = controller
+        backgroundColor = controller.backgroundColor
     }
 
     public init(controller: TerminalController) {
         self.controller = controller
+        backgroundColor = controller.backgroundColor
     }
 
     // MARK: - Forwarded from Controller (single source of truth)

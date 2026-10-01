@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 if [ ! -f .root ]; then
-    echo "[*] malformed project structure"
+    echo "[!] repository root not found. Run this script from a libghostty-spm checkout."
     exit 1
 fi
 
@@ -39,6 +39,7 @@ let package = Package(
         .iOS(.v15),
         .macOS(.v13),
         .macCatalyst(.v15),
+        .visionOS(.v1),
     ],
     products: [
         .library(name: "Consumer", targets: ["Consumer"]),
@@ -76,9 +77,8 @@ test_build() {
         -destination "$destination"
         -derivedDataPath "$WORK_DIR/DerivedData"
         -packageCachePath "$WORK_DIR/PackageCache"
+        build
     )
-
-    command+=(build)
 
     echo "[*] consumer build destination=$destination"
     "${command[@]}" 2>&1 | format_output
@@ -95,6 +95,12 @@ test_build() {
     test_build "generic/platform=macOS,variant=Mac Catalyst"
     test_build "generic/platform=iOS"
     test_build "generic/platform=iOS Simulator"
+    if [ -d "$WORK_DIR/Consumer/BinaryTarget/GhosttyKit.xcframework/xros-arm64" ]; then
+        test_build "generic/platform=visionOS"
+        test_build "generic/platform=visionOS Simulator"
+    else
+        echo "[*] xcframework has no xros slice, skipping visionOS destinations"
+    fi
 )
 
 echo "[*] xcframework consumer tests passed"

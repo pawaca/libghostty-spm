@@ -5,9 +5,19 @@
 //  Created by Lakr233 on 2026/3/17.
 //
 
-#if canImport(AppKit) && !canImport(UIKit)
+#if !canImport(UIKit) && canImport(AppKit)
     import AppKit
     import GhosttyKit
+
+    /// Cmd/Ctrl key-equivalent echo dedup state; behavior lives in +Input.
+    struct KeyEchoState {
+        var lastPerformKeyEvent: TimeInterval?
+    }
+
+    /// Mouse selection state; behavior lives in +Input.
+    struct PointerSelectionState {
+        var pendingSelectionMenuPoint: CGPoint?
+    }
 
     extension AppTerminalView {
         override open func keyDown(with event: NSEvent) {
@@ -19,8 +29,20 @@
             guard window?.firstResponder === self else { return false }
             guard let surface else { return false }
 
-            if keyIsBinding(event, on: surface) {
-                keyDown(with: event)
+            let isBinding = keyIsBinding(event, on: surface)
+            TerminalDebugLog.log(
+                .input,
+                "performKeyEquivalent isBinding=\(isBinding) chars=\(event.charactersIgnoringModifiers ?? "?") firstResponder=\(window?.firstResponder === self)"
+            )
+            if isBinding {
+                let action: ghostty_input_action_e = event.isARepeat
+                    ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+                var input = event.buildKeyInput(
+                    action: action,
+                    translationModifiers: event.modifierFlags
+                )
+                input.text = nil
+                surface.sendKeyEvent(input)
                 return true
             }
 
@@ -48,19 +70,19 @@
                 if !event.modifierFlags.contains(.command),
                    !event.modifierFlags.contains(.control)
                 {
-                    lastPerformKeyEvent = nil
+                    keyEcho.lastPerformKeyEvent = nil
                     return false
                 }
 
-                if let lastPerformKeyEvent,
-                   lastPerformKeyEvent == event.timestamp
+                if let last = keyEcho.lastPerformKeyEvent,
+                   last == event.timestamp
                 {
-                    self.lastPerformKeyEvent = nil
+                    keyEcho.lastPerformKeyEvent = nil
                     equivalent = event.characters ?? ""
                     break
                 }
 
-                lastPerformKeyEvent = event.timestamp
+                keyEcho.lastPerformKeyEvent = event.timestamp
                 return false
             }
 
@@ -92,9 +114,9 @@
         }
 
         override open func doCommand(by selector: Selector) {
-            if let lastPerformKeyEvent,
+            if let last = keyEcho.lastPerformKeyEvent,
                let current = NSApp.currentEvent,
-               lastPerformKeyEvent == current.timestamp
+               last == current.timestamp
             {
                 NSApp.sendEvent(current)
                 return
@@ -132,8 +154,7 @@
             window?.makeFirstResponder(self)
             let (x, y) = mousePoint(from: event)
             let mods = TerminalInputModifiers(from: event.modifierFlags)
-            pointerSelectionStartPoint = CGPoint(x: x, y: y)
-            pendingSelectionMenuPoint = nil
+            pointer.pendingSelectionMenuPoint = nil
             surface?.sendMousePos(x: x, y: y, mods: mods.ghosttyMods)
             surface?.sendMouseButton(
                 state: GHOSTTY_MOUSE_PRESS,
@@ -151,7 +172,6 @@
                 button: GHOSTTY_MOUSE_LEFT,
                 mods: mods.ghosttyMods
             )
-            finishPointerSelection(at: CGPoint(x: x, y: y))
         }
 
         override open func rightMouseDown(with event: NSEvent) {
@@ -160,7 +180,7 @@
             let mods = TerminalInputModifiers(from: event.modifierFlags)
             surface?.sendMousePos(x: x, y: y, mods: mods.ghosttyMods)
             if let menuPoint = selectionMenuPoint(at: CGPoint(x: x, y: y)) {
-                pendingSelectionMenuPoint = menuPoint
+                pointer.pendingSelectionMenuPoint = menuPoint
                 return
             }
             surface?.sendMouseButton(
@@ -174,8 +194,8 @@
             let (x, y) = mousePoint(from: event)
             let mods = TerminalInputModifiers(from: event.modifierFlags)
             surface?.sendMousePos(x: x, y: y, mods: mods.ghosttyMods)
-            if pendingSelectionMenuPoint != nil {
-                pendingSelectionMenuPoint = nil
+            if pointer.pendingSelectionMenuPoint != nil {
+                pointer.pendingSelectionMenuPoint = nil
                 showSelectionCopyMenu(with: event)
                 return
             }
@@ -223,9 +243,16 @@
             surface?.sendMousePos(x: x, y: y, mods: mods.ghosttyMods)
         }
 
+        // ghostty clears link hover only on a negative position; the
+        // tracking area stops delivering mouseMoved outside the view. Skipped
+        // during a drag, where mouseDragged keeps reporting real positions.
+        override open func mouseExited(with event: NSEvent) {
+            guard NSEvent.pressedMouseButtons == 0 else { return }
+            let mods = TerminalInputModifiers(from: event.modifierFlags)
+            surface?.sendMousePos(x: -1, y: -1, mods: mods.ghosttyMods)
+        }
+
         override open func mouseDragged(with event: NSEvent) {
-            let (x, y) = mousePoint(from: event)
-            updatePointerSelectionRect(to: CGPoint(x: x, y: y))
             mouseMoved(with: event)
         }
 
@@ -247,27 +274,6 @@
                 y: event.scrollingDeltaY,
                 mods: scrollMods.rawValue
             )
-        }
-
-        private func updatePointerSelectionRect(to point: CGPoint) {
-            guard let start = pointerSelectionStartPoint else { return }
-            lastPointerSelectionRect = CGRect(
-                x: min(start.x, point.x),
-                y: min(start.y, point.y),
-                width: abs(start.x - point.x),
-                height: abs(start.y - point.y)
-            ).insetBy(dx: -2, dy: -2)
-        }
-
-        private func finishPointerSelection(at point: CGPoint) {
-            defer { pointerSelectionStartPoint = nil }
-            guard let start = pointerSelectionStartPoint else { return }
-            let dragDistance = hypot(point.x - start.x, point.y - start.y)
-            if dragDistance < 2 {
-                lastPointerSelectionRect = nil
-            } else {
-                updatePointerSelectionRect(to: point)
-            }
         }
 
         private func showSelectionCopyMenu(with event: NSEvent) {
