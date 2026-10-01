@@ -17,9 +17,7 @@ private enum TerminalCallbacks {
         guard let userdata else { return }
         let controller = Unmanaged<TerminalController>.fromOpaque(userdata)
             .takeUnretainedValue()
-        terminalRunOnMain {
-            controller.handleWakeup()
-        }
+        controller.scheduleWakeup()
     }
 
     static func action(

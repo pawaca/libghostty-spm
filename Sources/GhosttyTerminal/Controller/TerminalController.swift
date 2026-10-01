@@ -64,6 +64,13 @@ public final class TerminalController {
     }
 
     private var wakeupObservers: [ObjectIdentifier: WakeupObserver] = [:]
+    nonisolated private let wakeupScheduler = TerminalWakeupScheduler()
+
+    nonisolated func scheduleWakeup() {
+        wakeupScheduler.schedule { [self] in
+            MainActor.assumeIsolated { handleWakeup() }
+        }
+    }
 
     func addWakeupObserver(
         _ key: ObjectIdentifier,
@@ -315,14 +322,14 @@ public final class TerminalController {
 
     func handleWakeup() {
         let observers = Array(wakeupObservers.values)
-        // One detached surface must not stop the tick for the others.
-        guard observers.isEmpty || observers.contains(where: { $0.shouldProcess() }) else {
-            TerminalDebugLog.log(.lifecycle, "wakeup suspended")
-            return
-        }
-
+        // The engine mailbox is bounded and its producers may block. Drain
+        // every wakeup, including detached surfaces and background apps.
+        // Visibility only decides whether a view should schedule rendering.
+        TerminalDebugLog.log(.lifecycle, "wakeup drain controller=\(ObjectIdentifier(self))")
         tick()
-        for observer in observers { observer.onWakeup() }
+        for observer in observers where observer.shouldProcess() {
+            observer.onWakeup()
+        }
     }
 
     private static func initializeRuntimeIfNeeded() {

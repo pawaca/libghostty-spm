@@ -12,6 +12,8 @@ import SwiftUI
 @MainActor
 public final class TerminalViewState: ObservableObject {
     @Published public internal(set) var title: String = ""
+    var pendingTitle: String?
+    var titlePublicationScheduled = false
     @Published public internal(set) var surfaceSize: TerminalGridMetrics?
     @Published public internal(set) var isFocused: Bool = false
 

@@ -1,0 +1,165 @@
+diff --git a/src/App.zig b/src/App.zig
+index 2ee9f93..ee1f25f 100644
+--- a/src/App.zig
++++ b/src/App.zig
+@@ -134,6 +134,12 @@ pub fn deinit(self: *App) void {
+     for (self.surfaces.items) |surface| surface.deinit();
+     self.surfaces.deinit(self.alloc);
+ 
++    // Producers have stopped. Release payloads queued before teardown began.
++    while (self.mailbox.pop(global.io())) |msg| switch (msg) {
++        .surface_message => |v| v.message.discard(),
++        else => {},
++    };
++
+     // Clean up our font group cache
+     // We should have zero items in the grid set at this point because
+     // destroy only gets called when the app is shutting down and this
+@@ -533,6 +539,8 @@ fn surfaceMessage(self: *App, surface: *Surface, msg: apprt.surface.Message) !vo
+     // a simple linear search here.
+     if (self.hasSurface(surface)) {
+         try surface.handleMessage(msg);
++    } else {
++        msg.discard();
+     }
+ 
+     // Window was not found, it probably quit before we handled the message.
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 1c7ff2e..23ef687 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -62,6 +62,9 @@ const max_active_key_tables = 8;
+ /// values.
+ id: u64,
+ 
++/// Producers must stop waiting for app delivery before the app thread joins them.
++closing: std.atomic.Value(bool) = .init(false),
++
+ /// Allocator
+ alloc: Allocator,
+ 
+@@ -806,6 +809,7 @@ pub fn init(
+ }
+ 
+ pub fn deinit(self: *Surface) void {
++    self.closing.store(true, .release);
+     // Stop search thread
+     if (self.search) |*s| s.deinit();
+ 
+diff --git a/src/apprt/none.zig b/src/apprt/none.zig
+index 0483d82..6a1220f 100644
+--- a/src/apprt/none.zig
++++ b/src/apprt/none.zig
+@@ -6,6 +6,9 @@ const apprt = @import("../apprt.zig");
+ pub const resourcesDir = internal_os.resourcesDir;
+ 
+ pub const App = struct {
++    /// This runtime has no event loop to wake (used by core unit tests).
++    pub fn wakeup(_: *const App) void {}
++
+     /// Always return false as there is no apprt to communicate with.
+     pub fn performIpc(
+         _: Allocator,
+diff --git a/src/apprt/surface.zig b/src/apprt/surface.zig
+index bb484b3..94a45af 100644
+--- a/src/apprt/surface.zig
++++ b/src/apprt/surface.zig
+@@ -12,6 +12,17 @@ const MessageData = @import("../datastruct/main.zig").MessageData;
+ 
+ /// The message types that can be sent to a single surface.
+ pub const Message = union(enum) {
++    /// Release messages whose recipient is closing or has already gone away.
++    pub fn discard(self: Message) void {
++        switch (self) {
++            .clipboard_write => |v| v.req.deinit(),
++            .pwd_change => |v| v.deinit(),
++            .kitty_clipboard_read => |v| v.destroy(),
++            .kitty_clipboard_write => |v| v.destroy(),
++            else => {},
++        }
++    }
++
+     /// Represents a write request. Magic number comes from the max size
+     /// we want this union to be.
+     pub const WriteReq = MessageData(u8, 255);
+@@ -211,12 +222,26 @@ pub const Mailbox = struct {
+         // Surface message sending is actually implemented on the app
+         // thread, so we have to rewrap the message with our surface
+         // pointer and send it to the app thread.
+-        return self.app.push(.{
+-            .surface_message = .{
+-                .surface = self.surface,
+-                .message = msg,
+-            },
+-        }, timeout);
++        // The app thread cannot drain while it joins a closing surface.
++        // Preserve normal delivery, but make the wait cancellable by teardown.
++        while (true) {
++            if (self.surface.closing.load(.acquire)) {
++                msg.discard();
++                // Consumed: instant-then-forever callers must not retry an
++                // owned payload that has already been released.
++                return 1;
++            }
++            const result = self.app.push(.{
++                .surface_message = .{
++                    .surface = self.surface,
++                    .message = msg,
++                },
++            }, switch (timeout) {
++                .forever => .{ .ns = 10 * std.time.ns_per_ms },
++                else => timeout,
++            });
++            if (result != 0 or timeout != .forever) return result;
++        }
+     }
+ };
+ 
+@@ -346,3 +371,47 @@ test "copyUtf8Z preserves UTF-8 that fits" {
+ 
+     try std.testing.expectEqualStrings("abcЯ", std.mem.sliceTo(&dst, 0));
+ }
++
++test "closing surface consumes owned messages without app callbacks" {
++    var surface: Surface = undefined;
++    surface.closing = .init(true);
++    const mailbox: Mailbox = .{ .surface = &surface, .app = undefined };
++    const payload = try Message.WriteReq.init(std.testing.allocator, @as([]const u8, "x" ** 1024));
++    try std.testing.expectEqual(@as(App.Mailbox.Queue.Size, 1), mailbox.push(.{ .pwd_change = payload }, .forever));
++    try std.testing.expectEqual(@as(App.Mailbox.Queue.Size, 1), mailbox.push(.ring_bell, .instant));
++}
++
++test "closing surface cancels a producer waiting on a full app mailbox" {
++    if (comptime build_config.app_runtime != .none) return error.SkipZigTest;
++    const Worker = struct {
++        fn run(mailbox: Mailbox, result: *App.Mailbox.Queue.Size) void {
++            result.* = mailbox.push(.ring_bell, .forever);
++        }
++    };
++    var surface: Surface = undefined;
++    surface.closing = .init(false);
++    var rt_app: apprt.App = undefined;
++    var queue: App.Mailbox.Queue = .{};
++    for (0..64) |_| {
++        try std.testing.expect(queue.push(std.testing.io, .quit, .instant) != 0);
++    }
++    const mailbox: Mailbox = .{
++        .surface = &surface,
++        .app = .{ .rt_app = &rt_app, .mailbox = &queue },
++    };
++    var result: App.Mailbox.Queue.Size = 0;
++    const thread = try std.Thread.spawn(.{}, Worker.run, .{ mailbox, &result });
++    // Confirm the producer is actually waiting, rather than closing before
++    // it starts. The waiter count is protected by the queue mutex.
++    while (true) {
++        queue.mutex.lockUncancelable(std.testing.io);
++        const waiting = queue.not_full_waiters > 0;
++        queue.mutex.unlock(std.testing.io);
++        if (waiting) break;
++        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
++    }
++    surface.closing.store(true, .release);
++    thread.join();
++    try std.testing.expectEqual(@as(App.Mailbox.Queue.Size, 1), result);
++    try std.testing.expectEqual(@as(App.Mailbox.Queue.Size, 64), queue.len);
++}

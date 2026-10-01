@@ -78,6 +78,12 @@ struct ContentView: View {
 A host that keeps several surfaces mounted at once (tabs hidden behind
 `opacity(0)`) sets `terminal.isSurfaceVisible = false` on the hidden ones.
 The surface keeps its grid, scrollback, and session; only rendering stops.
+Engine wakeups continue draining app messages when a surface is detached or
+the host app is inactive. Visibility gates frame scheduling, not title,
+directory, bell, or process-exit delivery; suspending that delivery can fill
+the engine mailbox and block terminal output. Wakeup notifications and title
+publications are coalesced per main-queue turn so a burst does not enqueue
+one UI task per engine message; title delegates still receive each message.
 
 ### UIKit / AppKit
 

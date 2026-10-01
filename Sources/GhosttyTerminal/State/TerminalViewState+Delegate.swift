@@ -44,7 +44,8 @@ extension TerminalViewState:
     /// no-change checks run inside the closure, against the value at apply
     /// time: two callbacks in one turn both see the same published value,
     /// so a check made at call time drops the second of X→Y→X and the
-    /// state ends at Y.
+    /// state ends at Y. Title updates additionally coalesce to the latest
+    /// value in that turn: title is current UI state, not an event log.
     ///
     /// The closures further down are deliberately *not* routed through this.
     /// They are requests with an answer expected, not state: a clipboard
@@ -58,7 +59,15 @@ extension TerminalViewState:
     }
 
     public func terminalDidChangeTitle(_ title: String) {
+        // Title is current state, not an event log. Publish only the latest
+        // value next turn instead of enqueuing one UI task per OSC 2 sequence.
+        pendingTitle = title
+        guard !titlePublicationScheduled else { return }
+        titlePublicationScheduled = true
         publishSoon {
+            $0.titlePublicationScheduled = false
+            guard let title = $0.pendingTitle else { return }
+            $0.pendingTitle = nil
             guard $0.title != title else { return }
             $0.title = title
         }

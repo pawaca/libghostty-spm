@@ -204,12 +204,8 @@ final class TerminalSurfaceCoordinator {
         surface = newSurface
         surfaceSession = configuration.inMemorySession
         newSurface.setOcclusion(effectiveSurfaceVisible)
-        // Wakeups must keep draining while the surface is merely occluded:
-        // the app mailbox (titles, pwd, bell, child-exit) only empties in
-        // ghostty_app_tick, and a full mailbox blocks the session's write
-        // thread on its next push. Only a detached surface or a
-        // backgrounded app suspends ticks — visibility gates rendering
-        // alone (canRenderFrame).
+        // The controller drains its mailbox even when this view cannot
+        // render. This predicate gates frame scheduling only.
         controller.addWakeupObserver(
             ObjectIdentifier(self),
             shouldProcess: { [weak self] in
